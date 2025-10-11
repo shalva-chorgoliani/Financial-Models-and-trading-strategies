@@ -1,3 +1,21 @@
+# Description:
+# This script constructs and analyzes optimal portfolios of S&P 500 stocks using a GARCH-based estimation 
+# of expected returns and the portfolio selection framework by Elton, Gruber, and Padberg (1976).
+#
+# Main steps:
+# 1. Downloads monthly price data for all S&P 500 constituents and the market index (^GSPC) via Yahoo Finance.
+# 2. Estimates each stock’s expected return maximum likelihood estimation of a GARCH(1,1) model. Variance is estimated using .var()
+# 3. Calculates systematic (beta) and unsystematic risk by regressing stock returns on market returns.
+# 4. Implements the Elton-Gruber-Padberg portfolio selection method:
+#    - Ranks stocks by excess return-to-beta ratio.
+#    - Iteratively selects stocks that improve the portfolio’s risk-return tradeoff.
+# 5. Computes portfolio return, variance, and standard deviation using the full covariance matrix 
+#    (thus accounting for correlations between stocks).
+# 6. Generates the efficient frontier for varying risk-free rates and identifies the tangency portfolio
+#    (maximum Sharpe ratio portfolio).
+# 7. Plots the efficient frontier and Capital Market Line (CML).
+
+
 import yfinance as yf
 import pandas as pd
 import statsmodels.api as sm
