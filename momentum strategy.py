@@ -11,64 +11,83 @@ html = requests.get(url, headers=headers).text
 sp500 = pd.read_html(html)[0] 
 tickers = sp500['Symbol'].str.replace('.', '-', regex=False).to_list() 
 
-# Download Stock Data and Benchmark
-start_date = "2009-01-01"
+start_date = "2000-01-01"
 end_date = "2025-01-02"
 
 data = yf.download(tickers, start=start_date, end=end_date, interval="1mo", auto_adjust=True)['Open']
 benchmark = yf.download("^GSPC", start=start_date, end=end_date, interval="1mo", auto_adjust=True)['Open']
 
 log_returns = np.log(data).diff()
-benchmark_ret = np.log(benchmark).diff().cumsum() # Cumulative log returns for S&P 500
+benchmark_ret = np.log(benchmark).diff().cumsum()
 
-#%% 2. Backtest Engine
-def run_strategy(lb, hp, returns_df):
-    # Momentum: rolling sum of log returns
-    # Shift(1) to avoid look-ahead bias
+#%% 2. Backtest Engine with Overlapping Portfolios
+def run_overlapping_strategy(lb, hp, returns_df, strategy_type='long_only'):
+    # Calculate Momentum: rolling sum of log returns
+    # We shift(1) to avoid look-ahead bias
     mom = returns_df.rolling(lb).sum().shift(1)
     
-    # Rebalance every 'hp' months
-    rebalance_dates = returns_df.index[::hp]
-    weights = pd.DataFrame(0.0, index=rebalance_dates, columns=returns_df.columns)
+    # Generate weights for a NEW portfolio started at each month t
+    # This represents ONLY the 1/hp slice of the total portfolio
+    new_weights = pd.DataFrame(0.0, index=returns_df.index, columns=returns_df.columns)
     
-    for date in rebalance_dates:
-        row = mom.loc[date]
-        valid = row.dropna()
-        if not valid.empty:
-            k = max(1, int(len(valid) * 0.1)) # Top 10%
-            winners = valid.rank(method='first') > (len(valid) - k)
-            weights.loc[date, winners[winners].index] = 1.0 / k
+    for date in returns_df.index:
+        row = mom.loc[date].dropna()
+        if not row.empty:
+            k = max(1, int(len(row) * 0.1))
+            ranks = row.rank(method='first')
             
-    # Forward fill weights and align with returns
-    full_weights = weights.reindex(returns_df.index).ffill()
-    port_ret = (full_weights.shift(1) * returns_df).sum(axis=1)
+            if strategy_type == 'long_only':
+                winners = ranks > (len(row) - k)
+                new_weights.loc[date, winners[winners].index] = 1.0 / k
+            elif strategy_type == 'long_short':
+                winners = ranks > (len(row) - k)
+                losers = ranks <= k
+                new_weights.loc[date, winners[winners].index] = 0.5 / k
+                new_weights.loc[date, losers[losers].index] = -0.5 / k
+
+    # Overlapping Logic: The total portfolio weight at time T 
+    # is the average of the weights from the last 'hp' formation periods.
+    # This simulates holding 'hp' sub-portfolios simultaneously.
+    # 
+    total_weights = new_weights.rolling(window=hp).mean()
+    
+    # Calculate returns: apply weights from T-1 to returns at T
+    port_ret = (total_weights.shift(1) * returns_df).sum(axis=1)
     return port_ret.cumsum()
 
-#%% 3. Run all 16 Combinations
+#%% 3. Run all 16 Combinations (Long-Only)
 lookbacks = [3, 6, 9, 12]
 holdings = [3, 6, 9, 12]
-all_results = pd.DataFrame()
+
+results_lo = pd.DataFrame()
+results_ls = pd.DataFrame()
 
 for lb in lookbacks:
     for hp in holdings:
         name = f"L{lb}/H{hp}"
-        all_results[name] = run_strategy(lb, hp, log_returns)
+        print(f"Calculating {name}...")
+        results_lo[name] = run_overlapping_strategy(lb, hp, log_returns, 'long_only')
+        results_ls[name] = run_overlapping_strategy(lb, hp, log_returns, 'long_short')
 
 #%% 4. Visualization
-plt.figure(figsize=(14, 8))
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 16))
+colors = plt.cm.tab20(np.linspace(0, 1, 16))
 
-# Plot the 16 strategies using a colormap for better differentiation
-colors = plt.cm.viridis(np.linspace(0, 1, 16))
-for i, col in enumerate(all_results.columns):
-    plt.plot(all_results[col], color=colors[i], alpha=0.6, linewidth=1, label=col)
+# Plot 1: Long Only Overlapping
+for i, col in enumerate(results_lo.columns):
+    ax1.plot(results_lo[col], color=colors[i], alpha=0.7, label=col)
+ax1.plot(benchmark_ret, color='black', linewidth=3, linestyle='--', label='S&P 500')
+ax1.set_title("16 Overlapping Momentum Strategies: Long-Only", fontsize=14)
+ax1.legend(loc='upper left', bbox_to_anchor=(1, 1), ncol=1)
+ax1.grid(True, alpha=0.3)
 
-# Plot Benchmark (S&P 500)
-plt.plot(benchmark_ret, color='black', linewidth=3, linestyle='--', label='S&P 500 (Benchmark)')
+# Plot 2: Long-Short Overlapping
+for i, col in enumerate(results_ls.columns):
+    ax2.plot(results_ls[col], color=colors[i], alpha=0.7, label=col)
+ax2.plot(benchmark_ret, color='black', linewidth=3, linestyle='--', label='S&P 500')
+ax2.set_title("16 Overlapping Momentum Strategies: Long-Short (Market Neutral)", fontsize=14)
+ax2.legend(loc='upper left', bbox_to_anchor=(1, 1), ncol=1)
+ax2.grid(True, alpha=0.3)
 
-plt.title("Comparison of 16 Momentum Strategies (Lookback/Holding) vs S&P 500", fontsize=15)
-plt.xlabel("Year", fontsize=12)
-plt.ylabel("Cumulative Log Return", fontsize=12)
-plt.legend(loc='upper left', bbox_to_anchor=(1, 1), ncol=1, fontsize=9)
-plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
